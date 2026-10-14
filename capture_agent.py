@@ -27,7 +27,7 @@ import threading
 import time
 
 # Filled in automatically when downloaded from NetScope (remote session relay host).
-DEFAULT_SERVER = "https://wiresharp.lovable.app"
+DEFAULT_SERVER = "__NETSCOPE_SERVER__"
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -326,6 +326,37 @@ def auto_iface():
                         return name
         except OSError:
             pass
+    elif sys.platform == "win32":
+        # Scapy needs a real adapter name on Windows; without one it errors out
+        # and no packets ever reach the browser. Pick the highest-traffic
+        # non-loopback adapter via the OS interface table.
+        try:
+            from scapy.all import get_if_list, get_if_addr, conf  # noqa
+
+            best, best_score = None, -1
+            for name in get_if_list():
+                try:
+                    addr = get_if_addr(name)
+                except Exception:  # noqa
+                    continue
+                if name.startswith("lo") or addr in ("0.0.0.0", "127.0.0.1"):
+                    continue
+                score = 1 if conf.route.route("8.8.8.8")[0] == name else 0
+                if score > best_score:
+                    best, best_score = name, score
+            if best:
+                print(f"[*] Auto-detected Windows interface: '{best}'")
+                return best
+        except Exception:  # noqa
+            try:
+                from scapy.all import conf  # noqa
+
+                name = conf.iface
+                if name:
+                    print(f"[*] Auto-detected Windows interface (default route): '{name}'")
+                    return name
+            except Exception:  # noqa
+                pass
     return None
 
 
@@ -370,7 +401,18 @@ def capture_scapy(hub, iface):
     from scapy.all import sniff, conf  # noqa
     conf.sniff_promisc = 1
     print(f"[*] Scapy capture on '{iface or 'default'}' (promiscuous)")
-    sniff(prn=lambda p: hub.broadcast(bytes(p)), iface=iface, store=False, promisc=True)
+    print("[*] Waiting for packets… (open a website or run a ping to generate traffic)")
+    try:
+        sniff(prn=lambda p: hub.broadcast(bytes(p)), iface=iface, store=False, promisc=True)
+    except OSError as e:
+        print(f"[!] Capture failed on '{iface or 'default'}': {e}")
+        if sys.platform == "win32":
+            print("    On Windows this usually means Npcap is missing or you are not Administrator.")
+            print("    Install Npcap from https://npcap.com/#download, then re-run this script")
+            print("    in a PowerShell window opened with 'Run as administrator'.")
+        else:
+            print("    Re-run with sudo, or pick another interface with --iface.")
+        sys.exit(1)
 
 
 def probe_loop(hub, interval=5):
